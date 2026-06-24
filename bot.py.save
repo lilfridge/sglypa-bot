@@ -1,0 +1,283 @@
+cat > bot.py << 'ENDOFFILE'
+import telebot
+import markovify
+import random
+import threading
+import time
+import json
+import os
+from PIL import Image, ImageDraw, ImageFont
+import io
+import textwrap
+
+TOKEN = os.environ.get("TOKEN", "ВСТАВЬ_СВОЙ_ТОКЕН_СЮДА")
+CHAT_ID = -1002610165137
+bot = telebot.TeleBot(TOKEN)
+
+messages_file = "messages.json"
+users_file = "users.json"
+
+MAT = ["блять", "бля", "нахуй", "хуй", "пизда", "ебать", "сука", "пиздец", "залупа", "мудак"]
+EMOJI = ["💀", "🗿", "😭", "🤡", "👀", "🔥", "😐", "💅", "🫡", "🤨", "😤", "🥶", "🤙"]
+
+def load_messages():
+    if os.path.exists(messages_file):
+        with open(messages_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+def save_message(text):
+    msgs = load_messages()
+    msgs.append(text)
+    if len(msgs) > 5000:
+        msgs = msgs[-5000:]
+    with open(messages_file, "w", encoding="utf-8") as f:
+        json.dump(msgs, f, ensure_ascii=False)
+
+def load_users():
+    if os.path.exists(users_file):
+        with open(users_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_user(user_id, name, msg):
+    users = load_users()
+    uid = str(user_id)
+    if uid not in users:
+        users[uid] = {"name": name, "messages": []}
+    users[uid]["name"] = name
+    users[uid]["messages"].append(msg)
+    if len(users[uid]["messages"]) > 1000:
+        users[uid]["messages"] = users[uid]["messages"][-1000:]
+    with open(users_file, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False)
+
+def generate_markov():
+    msgs = load_messages()
+    if len(msgs) < 10:
+        return "ещё мало сообщений, пишите больше!"
+    text = " ".join(msgs)
+    try:
+        model = markovify.Text(text, state_size=2)
+        result = model.make_sentence(tries=50)
+        return result if result else random.choice(msgs)
+    except:
+        return random.choice(msgs)
+
+def get_random_words(n=3):
+    msgs = load_messages()
+    if not msgs:
+        return "НУ И ДЕЛА БРАТАН"
+    all_words = " ".join(msgs).split()
+    all_words = [w for w in all_words if len(w) > 2]
+    if not all_words:
+        return "НУ И ДЕЛА БРАТАН"
+    return " ".join(random.choices(all_words, k=n)).upper()
+
+def draw_meme_text(draw, text, img_w, img_h, position="bottom"):
+    try:
+        font = ImageFont.truetype("impact.ttf", size=int(img_h * 0.1))
+    except:
+        font = ImageFont.load_default()
+    lines = textwrap.wrap(text, width=12)
+    line_height = int(img_h * 0.12)
+    if position == "top":
+        y = 10
+    else:
+        y = img_h - line_height * len(lines) - 10
+    for line in lines:
+        bbox = draw.textbbox((0, 0), line, font=font)
+        text_w = bbox[2] - bbox[0]
+        x = (img_w - text_w) // 2
+        for dx in [-3, 3]:
+            for dy in [-3, 3]:
+                draw.text((x+dx, y+dy), line, font=font, fill=(0,0,0))
+        draw.text((x, y), line, font=font, fill=(255,255,255))
+        y += line_height
+
+def make_meme(img_bytes, top_text, bottom_text):
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    w, h = img.size
+    draw_meme_text(draw, top_text, w, h, "top")
+    draw_meme_text(draw, bottom_text, w, h, "bottom")
+    output = io.BytesIO()
+    img.save(output, format="JPEG")
+    output.seek(0)
+    return output
+
+def has_mat(text):
+    return any(m in text.lower() for m in MAT)
+
+def random_response():
+    roll = random.random()
+    if roll < 0.15:
+        return " ".join(random.choices(EMOJI, k=random.randint(1,4)))
+    elif roll < 0.25:
+        return generate_markov().upper()
+    else:
+        return generate_markov()
+
+@bot.message_handler(func=lambda m: True, content_types=["text"])
+def handle_message(message):
+    if not message.text:
+        return
+    text = message.text
+    name = message.from_user.first_name or "Аноним"
+    uid = message.from_user.id
+    if not text.startswith("/"):
+        save_message(text)
+        save_user(uid, name, text)
+    if f"@{bot.get_me().username}" in text:
+        bot.reply_to(message, random_response())
+        return
+    if has_mat(text) and random.random() < 0.5:
+        bot.reply_to(message, random.choice(MAT) + "!")
+        return
+    if random.random() < 0.3:
+        bot.reply_to(message, random_response())
+
+@bot.message_handler(commands=["sglypa", "сглыпа"])
+def cmd_sglypa(message):
+    bot.send_message(message.chat.id, generate_markov())
+
+@bot.message_handler(commands=["кто"])
+def cmd_kto(message):
+    text = message.text.replace("/кто", "").strip()
+    if not text:
+        text = "должен купить еду"
+    users = load_users()
+    if not users:
+        bot.send_message(message.chat.id, "не знаю никого ещё")
+        return
+    chosen = random.choice(list(users.values()))
+    bot.send_message(message.chat.id, f"{chosen['name']} {text}!")
+
+@bot.message_handler(commands=["имитировать"])
+def cmd_imitировать(message):
+    args = message.text.split()
+    if len(args) < 2:
+        bot.reply_to(message, "напиши /имитировать имя")
+        return
+    name = args[1].replace("@", "")
+    users = load_users()
+    found = None
+    for uid, data in users.items():
+        if data["name"].lower() == name.lower():
+            found = uid
+            break
+    if not found:
+        bot.reply_to(message, "не знаю такого")
+        return
+    msgs = users[found]["messages"]
+    if len(msgs) < 5:
+        bot.reply_to(message, "мало сообщений от этого человека")
+        return
+    try:
+        model = markovify.Text(" ".join(msgs), state_size=1)
+        result = model.make_sentence(tries=50) or random.choice(msgs)
+    except:
+        result = random.choice(msgs)
+    bot.reply_to(message, f"{users[found]['name']}: {result}")
+
+@bot.message_handler(content_types=["photo"])
+def handle_photo(message):
+    caption = message.caption or ""
+    if "мем" in caption.lower():
+        file_info = bot.get_file(message.photo[-1].file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        top = get_random_words(random.randint(2,3))
+        bottom = get_random_words(random.randint(2,4))
+        output = make_meme(downloaded, top, bottom)
+        bot.send_photo(message.chat.id, output)
+
+def random_messages():
+    while True:
+        time.sleep(random.randint(600, 900))
+        try:
+            bot.send_message(CHAT_ID, random_response())
+        except:
+            pass
+
+threading.Thread(target=random_messages, daemon=True).start()
+
+print("Бот запущен!")
+bot.polling()
+import asyncio
+import json
+import logging
+import os
+import random
+from dotenv import load_dotenv
+
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+import markovify
+
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher()
+
+DATA_FILE = "chat_data.json"
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+chats = load_data()
+
+def save_data():
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(chats, f, ensure_ascii=False, indent=2)
+
+def get_model(chat_id):
+    if chat_id not in chats or len(chats[chat_id]) < 50:
+        return None
+    text = "\n".join(chats[chat_id])
+    return markovify.NewlineText(text, state_size=2)
+
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.reply("lolych проснулся 🐸\nЯ учусь на ваших сообщениях...")
+
+@dp.message()
+async def handle_message(message: types.Message):
+    if not message.text or len(message.text) < 3:
+        return
+
+    chat_id = str(message.chat.id)
+    
+    if chat_id not in chats:
+        chats[chat_id] = []
+    
+    chats[chat_id].append(message.text)
+    
+    if len(chats[chat_id]) > 2500:
+        chats[chat_id] = chats[chat_id][-1800:]
+    
+    save_data()
+
+    if random.random() < 0.18:  # шанс ответить
+        model = get_model(chat_id)
+        if model:
+            try:
+                reply = model.make_sentence(tries=100)
+                if reply and 5 < len(reply) < 350:
+                    await message.reply(reply)
+            except:
+                pass
+
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    print("🚀 lolych запущен!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
